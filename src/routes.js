@@ -15,6 +15,7 @@ import { generateCoachingNotifications } from "./coaching.js";
 import { buildBillIngestion, demoBill } from "./ingestion.js";
 import { getPriceForDate, getPriceForecast } from "./price.js";
 import { generatePlanMoves } from "./plan.js";
+import { generateActions } from "./actions.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -132,10 +133,12 @@ router.get("/api/price/now", (request, response) => {
 
   response.json({
     cents_per_kwh: priceInfo.cents_per_kwh,
+    avg_cents_kwh: priceInfo.avg_cents_kwh,
     status: priceInfo.status,
     renewables_pct: priceInfo.renewables_pct,
     updated_at: now.toISOString(),
     forecast,
+    actions: generateActions(priceInfo, forecast),
     message: priceInfo.message
   });
 });
@@ -164,6 +167,17 @@ router.get("/api/plan/:customerEmail", async (request, response, next) => {
     };
 
     const planInfo = generatePlanMoves(bill);
+
+    // Merge any saved Bank It / dismiss statuses so they persist across reloads.
+    const savedActions = await getSavingsActions(email);
+    const statusByMoveId = Object.fromEntries(
+      savedActions.map((action) => [action.moveId, action.status])
+    );
+    planInfo.moves = planInfo.moves.map((move) => ({
+      ...move,
+      status: statusByMoveId[move.id] ?? "pending"
+    }));
+
     response.json(planInfo);
   } catch (error) {
     next(error);
@@ -175,14 +189,33 @@ router.get("/api/savings/:customerEmail", async (request, response, next) => {
   try {
     const email = request.params.customerEmail;
     const actions = await getSavingsActions(email);
-    response.json({ customerEmail: email, actions });
+
+    const bankedMoves = actions
+      .filter((action) => action.status === "banked")
+      .map((action) => ({
+        move_id: action.moveId,
+        title: action.title,
+        annual_delta: Math.round(action.annualDeltaCents / 100)
+      }));
+
+    const totalAnnualSavings = bankedMoves.reduce(
+      (sum, move) => sum + move.annual_delta,
+      0
+    );
+
+    response.json({
+      customerEmail: email,
+      total_annual_savings: totalAnnualSavings,
+      banked_moves: bankedMoves,
+      actions
+    });
   } catch (error) {
     next(error);
   }
 });
 
-// 9. POST /api/savings/:customerEmail
-router.post("/api/savings/:customerEmail", async (request, response, next) => {
+// 9. POST /api/savings/:customerEmail/actions
+router.post("/api/savings/:customerEmail/actions", async (request, response, next) => {
   try {
     const email = request.params.customerEmail;
     const { move_id, status } = request.body;
@@ -205,8 +238,8 @@ router.post("/api/savings/:customerEmail", async (request, response, next) => {
   }
 });
 
-// 10. PATCH /api/savings/:customerEmail/:moveId
-router.patch("/api/savings/:customerEmail/:moveId", async (request, response, next) => {
+// 10. PATCH /api/savings/:customerEmail/actions/:moveId
+router.patch("/api/savings/:customerEmail/actions/:moveId", async (request, response, next) => {
   try {
     const email = request.params.customerEmail;
     const moveId = request.params.moveId;
@@ -235,23 +268,61 @@ router.patch("/api/savings/:customerEmail/:moveId", async (request, response, ne
   }
 });
 
-// 11. GET /api/leaderboard
+// 11. POST /api/savings/:customerEmail/share
+router.post("/api/savings/:customerEmail/share", async (request, response, next) => {
+  try {
+    const email = request.params.customerEmail;
+    const actions = await getSavingsActions(email);
+    const bankedMoves = actions.filter((action) => action.status === "banked");
+    const totalAnnualSavingsCents = bankedMoves.reduce(
+      (sum, action) => sum + Number(action.annualDeltaCents || 0),
+      0
+    );
+
+    response.status(201).json({
+      shared: true,
+      contribution_id: `anon-${Date.now().toString(36)}`,
+      shared_with: ["suburb leaderboard", "savings pattern dataset"],
+      privacy: "Anonymized household savings patterns only. Email and bill files are not shared.",
+      summary: {
+        postcode: request.body?.postcode || null,
+        annual_savings_cents: totalAnnualSavingsCents,
+        move_count: bankedMoves.length,
+        patterns: bankedMoves.map((action) => action.type || action.moveId)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 12. GET /api/leaderboard
 router.get("/api/leaderboard", (request, response) => {
   const postcode = request.query.postcode ? String(request.query.postcode) : "3006";
   const userSuburb = getSuburbForPostcode(postcode);
 
+  const entry = (suburb, savedCents, households) => ({
+    suburb,
+    saved_cents: savedCents,
+    avg_annual_saving: Math.round(savedCents / 100 / households),
+    users: households,
+    is_user_suburb: userSuburb === suburb
+  });
+
+  const rows = [
+    entry("Erskineville", 1490200, 142),
+    entry("Newtown", 1243000, 168),
+    entry("Marrickville", 988000, 121),
+    // Include the actual user suburb dynamically if it's not in the default list
+    ...(userSuburb !== "Erskineville" && userSuburb !== "Newtown" && userSuburb !== "Marrickville"
+      ? [entry(userSuburb, 742000, 96)]
+      : [])
+  ].sort((a, b) => b.saved_cents - a.saved_cents);
+
   response.json({
     suburb: userSuburb,
     suburb_saved_cents: 1243000,
-    rank: 3,
-    leaderboard: [
-      { suburb: "Erskineville", saved_cents: 1490200, is_user_suburb: userSuburb === "Erskineville" },
-      { suburb: "Newtown", saved_cents: 1243000, is_user_suburb: userSuburb === "Newtown" },
-      { suburb: "Marrickville", saved_cents: 988000, is_user_suburb: userSuburb === "Marrickville" },
-      // Include the actual user suburb dynamically if it's not in the default list
-      ...(userSuburb !== "Erskineville" && userSuburb !== "Newtown" && userSuburb !== "Marrickville"
-        ? [{ suburb: userSuburb, saved_cents: 742000, is_user_suburb: true }]
-        : [])
-    ].sort((a, b) => b.saved_cents - a.saved_cents)
+    rank: rows.findIndex((row) => row.is_user_suburb) + 1 || 3,
+    leaderboard: rows
   });
 });

@@ -32,6 +32,7 @@ export function getPriceForDate(date) {
     cents_per_kwh: cents,
     status,
     renewables_pct: Math.max(0, Math.min(100, renewables)),
+    avg_cents_kwh: 28.0,
     message
   };
 }

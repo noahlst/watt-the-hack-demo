@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const pdf = require("pdf-parse");
+// pdf-parse v2 exposes a class (new PDFParse({ data }).getText()), not a callable.
+const { PDFParse } = require("pdf-parse");
 
 const DATE_PATTERN = /(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/g;
 
@@ -89,7 +90,8 @@ async function textFromFile(file) {
     name.endsWith(".pdf")
   ) {
     try {
-      const parsed = await pdf(file.buffer);
+      const parser = new PDFParse({ data: file.buffer });
+      const parsed = await parser.getText();
       return parsed.text ?? "";
     } catch (error) {
       console.error("Failed to parse PDF file:", error);
@@ -142,6 +144,88 @@ function detectProvider(rawText) {
   if (text.includes("alinta energy") || text.includes("alinta")) return "Alinta Energy";
   if (text.includes("agl")) return "AGL";
   return null;
+}
+
+const NETWORK_BY_POSTCODE_PREFIX = {
+  // VIC
+  "30": "CitiPower",
+  "31": "Powercor",
+  "32": "AusNet Services",
+  // NSW
+  "20": "Ausgrid",
+  "21": "Ausgrid",
+  "22": "Endeavour Energy",
+  "25": "Essential Energy",
+  // QLD
+  "40": "Energex"
+};
+
+function detectNetwork(rawText, postcode) {
+  const known = ["CitiPower", "Powercor", "AusNet", "Ausgrid", "Endeavour", "Essential Energy", "Energex", "Jemena"];
+  if (rawText) {
+    const hit = known.find((n) => rawText.toLowerCase().includes(n.toLowerCase()));
+    if (hit) return hit === "AusNet" ? "AusNet Services" : hit;
+  }
+  if (postcode) {
+    return NETWORK_BY_POSTCODE_PREFIX[String(postcode).slice(0, 2)] ?? null;
+  }
+  return null;
+}
+
+// Solar is only "detected" with a positive feed-in/export credit — not when the
+// bill merely lists "Solar feed-in tariff N/A" on a non-solar account.
+function detectSolar(rawText) {
+  if (!rawText) return false;
+  const t = rawText.toLowerCase();
+  if (!t.includes("solar")) return false;
+  if (/no solar/.test(t)) return false;
+  if (/solar[^.\n]{0,40}(n\/a|nil|not detected)/.test(t)) return false;
+  if (/feed[\s-]?in[^.\n]{0,30}n\/a/.test(t)) return false;
+  if (/solar[^.\n]{0,40}\$\s?\d/.test(t)) return true;
+  if (/feed[\s-]?in[^.\n]{0,30}\$\s?\d/.test(t)) return true;
+  return false;
+}
+
+// Build the display-ready "decoded" view the Bill screen renders.
+function decodeBill(rawText, facts) {
+  const { usageKwh, usageChargeCents, supplyChargeCents, totalCents, billDays, postcode, isSolar, planName } = facts;
+  const text = rawText ?? "";
+
+  // Usage rate c/kWh: prefer an explicit "28.6 c/kWh", else derive from totals.
+  const rateMatch = text.match(/([\d.]+)\s*c\s*\/\s*kwh/i);
+  let usageRate = rateMatch ? numberFrom(rateMatch[1]) : null;
+  if (usageRate == null && usageKwh > 0 && usageChargeCents && usageChargeCents > usageKwh) {
+    usageRate = usageChargeCents / usageKwh;
+  }
+
+  // Daily supply charge c/day: prefer "118.8 c/Day", else derive from total + days.
+  const supplyMatch = text.match(/([\d.]+)\s*c\s*\/\s*day/i);
+  let supplyRate = supplyMatch ? numberFrom(supplyMatch[1]) : null;
+  if (supplyRate == null && supplyChargeCents && billDays > 0) {
+    supplyRate = supplyChargeCents / billDays;
+  }
+
+  // Tariff type: time-of-use only if an off-peak window actually carries a rate
+  // (bills often list "Off peak N/A" on a flat single-rate plan).
+  const lower = text.toLowerCase();
+  const hasLiveOffPeak = /off[\s-]?peak/.test(lower) && !/off[\s-]?peak[^\n]{0,8}n\/a/.test(lower);
+  const isTou = hasLiveOffPeak && /peak/.test(lower);
+  const tariffType = isTou ? "Time-of-use" : "Flat rate · single";
+
+  // Estimated annual cost from this bill's run-rate.
+  const annualCostCents =
+    totalCents != null && billDays > 0
+      ? Math.round((totalCents / billDays) * 365)
+      : null;
+
+  return {
+    network: detectNetwork(rawText, postcode),
+    tariff_type: planName ? `${tariffType}` : tariffType,
+    usage_rate_c_kwh: usageRate == null ? null : Math.round(usageRate * 10) / 10,
+    supply_charge_c_day: supplyRate == null ? null : Math.round(supplyRate * 10) / 10,
+    solar: !!isSolar,
+    estimated_annual_cost_cents: annualCostCents
+  };
 }
 
 export async function buildBillIngestion(input = {}, file = null) {
@@ -246,7 +330,7 @@ export async function buildBillIngestion(input = {}, file = null) {
     ? Math.round(usageChargeNum)
     : (centsFrom(usageChargeNum) ?? centsFrom(input.usageChargeCents));
 
-  const isSolar = !!(rawText && rawText.toLowerCase().includes("solar"));
+  const isSolar = detectSolar(rawText);
 
   return {
     id: randomUUID(),
@@ -269,6 +353,16 @@ export async function buildBillIngestion(input = {}, file = null) {
       billDays,
       nmi,
       solar: isSolar,
+      decoded: decodeBill(rawText, {
+        usageKwh,
+        usageChargeCents,
+        supplyChargeCents,
+        totalCents,
+        billDays,
+        postcode,
+        isSolar,
+        planName
+      }),
       inputFields: Object.keys(input),
       file: file
         ? {

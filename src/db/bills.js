@@ -34,29 +34,30 @@ function mapBillRow(row) {
     return null;
   }
 
+  // Returned to the frontend, which reads snake_case (bill.total_cents, etc.).
   return {
     id: row.id,
-    customerId: row.customer_id,
-    customerEmail: row.customer_email,
+    customer_id: row.customer_id,
+    customer_email: row.customer_email,
     provider: row.provider,
-    planName: row.plan_name,
-    serviceAddress: row.service_address,
+    plan_name: row.plan_name,
+    service_address: row.service_address,
     postcode: row.postcode,
-    billPeriodStart: row.bill_period_start,
-    billPeriodEnd: row.bill_period_end,
-    usageKwh: Number(row.usage_kwh),
-    dailyAverageKwh: Number(row.daily_average_kwh),
-    supplyChargeCents:
+    bill_period_start: row.bill_period_start,
+    bill_period_end: row.bill_period_end,
+    usage_kwh: Number(row.usage_kwh),
+    daily_average_kwh: Number(row.daily_average_kwh),
+    supply_charge_cents:
       row.supply_charge_cents == null ? null : Number(row.supply_charge_cents),
-    usageChargeCents:
+    usage_charge_cents:
       row.usage_charge_cents == null ? null : Number(row.usage_charge_cents),
-    totalCents: row.total_cents == null ? null : Number(row.total_cents),
-    sourceFileName: row.source_file_name,
-    rawText: row.raw_text,
-    extractedData: row.extracted_data,
-    coachingNotifications: row.coaching_notifications,
+    total_cents: row.total_cents == null ? null : Number(row.total_cents),
+    source_file_name: row.source_file_name,
+    raw_text: row.raw_text,
+    extracted_data: row.extracted_data,
+    coaching_notifications: row.coaching_notifications,
     status: row.status,
-    createdAt: row.created_at
+    created_at: row.created_at
   };
 }
 

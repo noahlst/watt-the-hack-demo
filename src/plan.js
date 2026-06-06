@@ -7,7 +7,9 @@ export function generatePlanMoves(bill) {
   }
 
   const usageKwh = Number(bill.usageKwh ?? 0);
-  const isSolar = !!(bill.extractedData?.solar || (bill.rawText && bill.rawText.toLowerCase().includes("solar")));
+  // Trust the decoded solar flag from ingestion (avoids false positives from
+  // "Solar feed-in tariff N/A" lines on non-solar bills).
+  const isSolar = bill.extractedData?.solar === true;
 
   // Calculate ToU and Hot Water savings dynamically based on usage
   const touSavingsCents = usageKwh > 0 ? Math.round(usageKwh * 0.25 * 100) : 31200; 
@@ -72,8 +74,30 @@ export function generatePlanMoves(bill) {
     .filter(m => m.good)
     .reduce((sum, m) => sum + m.annual_delta_cents, 0);
 
+  // Decorate each move with the fields the frontend reads:
+  // - body: the descriptive line (PlanScreen reads move.body)
+  // - annual_delta: dollars (PlanScreen shows +$X/yr and sums banked)
+  // - priority: drives the status colour (good→green, skip→red, payback→yellow)
+  const decorated = moves.map((move) => {
+    let priority = "medium";
+    if (move.payback_years != null) {
+      priority = "medium";
+    } else if (move.good && move.annual_delta_cents > 0) {
+      priority = "low";
+    } else if (!move.good) {
+      priority = "high";
+    }
+
+    return {
+      ...move,
+      body: move.sub,
+      annual_delta: Math.round(move.annual_delta_cents / 100),
+      priority
+    };
+  });
+
   return {
     estimated_annual_saving_cents: totalSavings,
-    moves
+    moves: decorated
   };
 }
