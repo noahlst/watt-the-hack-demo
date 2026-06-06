@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { generatePlanMoves } from "./plan.js";
 
 function dollars(cents) {
   if (cents == null || Number.isNaN(Number(cents))) {
@@ -27,6 +28,16 @@ export function generateCoachingNotifications(bill) {
   const provider = bill.provider ?? "your retailer";
   const notifications = [];
 
+  // Get plan moves to pull top saving recommendation
+  const planInfo = generatePlanMoves(bill);
+  const bestMove = planInfo.moves
+    .filter((m) => m.good && m.annual_delta_cents > 0)
+    .sort((a, b) => b.annual_delta_cents - a.annual_delta_cents)[0];
+
+  const topSavingStr = bestMove
+    ? `Top move: ${bestMove.title} (save ${dollars(bestMove.annual_delta_cents)}/yr).`
+    : "";
+
   if (dailyAverageKwh >= 18) {
     notifications.push(
       notification(
@@ -34,7 +45,7 @@ export function generateCoachingNotifications(bill) {
         "Your daily usage is running hot",
         `This bill averages ${dailyAverageKwh.toFixed(
           1
-        )} kWh/day. WattNow recommends shifting laundry, dishwashing, and EV charging away from the evening peak this week.`,
+        )} kWh/day. ${topSavingStr} WattNow recommends shifting laundry, dishwashing, and EV charging away from the evening peak this week.`,
         "high",
         1
       )
@@ -46,7 +57,7 @@ export function generateCoachingNotifications(bill) {
         "Nice steady usage profile",
         `This bill averages ${dailyAverageKwh.toFixed(
           1
-        )} kWh/day. WattNow will watch for unusual spikes and nudge you before they become bill shock.`,
+        )} kWh/day. ${topSavingStr} WattNow will watch for unusual spikes and nudge you before they become bill shock.`,
         "medium",
         2
       )
@@ -68,11 +79,12 @@ export function generateCoachingNotifications(bill) {
   }
 
   if (total) {
+    const mainRecStr = bestMove ? ` We suggest committing to: ${bestMove.title}.` : "";
     notifications.push(
       notification(
         "bill_watch",
         "Bill forecast ready",
-        `Your latest ${provider} bill was ${total}. WattNow will compare the next seven days against this baseline and warn you early.`,
+        `Your latest ${provider} bill was ${total}.${mainRecStr} WattNow will compare the next seven days against this baseline and warn you early.`,
         "medium",
         7
       )
@@ -83,7 +95,7 @@ export function generateCoachingNotifications(bill) {
     notification(
       "coach_summary",
       "WattNow coaching is live",
-      "Upload another bill any time and WattNow will refresh your baseline, forecast, and next best saving action.",
+      `Upload another bill any time. Your total annual potential saving is ${dollars(planInfo.estimated_annual_saving_cents)}/yr across all recommendations.`,
       "low",
       10
     )
