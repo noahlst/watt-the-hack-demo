@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { readFile } from "node:fs/promises";
 import { buildBillIngestion, demoBill } from "../src/ingestion.js";
 import { generateCoachingNotifications } from "../src/coaching.js";
 import { getPriceForDate, getPriceForecast } from "../src/price.js";
